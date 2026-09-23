@@ -1,0 +1,79 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Force rebuild even if the version already exists
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image name and Tailscale version
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          tag=$(gh api repos/tailscale/tailscale/releases/latest --jq .tag_name)
+          {
+            echo "tag=${tag}"
+            echo "version=${tag#v}"
+            echo "image=ghcr.io/${OWNER,,}/derper"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether version is already published
+        id: exists
+        if: github.event_name == 'schedule'
+        run: |
+          if docker manifest inspect "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Image for ${{ steps.meta.outputs.version }} already exists, skipping."
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.exists.outputs.skip != 'true'
+
+      - name: Docker metadata
+        id: dmeta
+        if: steps.exists.outputs.skip != 'true'
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.meta.outputs.image }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ steps.meta.outputs.version }}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push
+        if: steps.exists.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: DERPER_VERSION=${{ steps.meta.outputs.tag }}
+          tags: ${{ steps.dmeta.outputs.tags }}
+          labels: ${{ steps.dmeta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

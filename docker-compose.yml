@@ -1,0 +1,42 @@
+# Portainer stack: Tailscale node + DERP relay sharing tailscaled's socket.
+# Set TS_AUTHKEY, TS_ROUTES (e.g. 192.0.2.0/24) and DERP_HOSTNAME (e.g. derp.example.com)
+# as stack environment variables in Portainer.
+volumes:
+  tailscale-socket:
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: ${TS_HOSTNAME:-tailscale-derp}
+    network_mode: host
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SOCKET=/var/run/tailscale/tailscaled.sock
+      - TS_EXTRA_ARGS=--advertise-exit-node --accept-routes --advertise-routes=${TS_ROUTES}
+      - TS_TAILSCALED_EXTRA_ARGS=--port=41641
+    volumes:
+      - /opt/tailscale/state:/var/lib/tailscale
+      - tailscale-socket:/var/run/tailscale
+    cap_add:
+      - net_admin
+      - net_raw
+    restart: unless-stopped
+
+  derper:
+    image: ghcr.io/ulfendk/derper:latest
+    container_name: derper
+    network_mode: host
+    command:
+      - -a=:8080
+      - -http-port=-1
+      - -stun=true
+      - -stun-port=3478
+      - -hostname=${DERP_HOSTNAME}
+      - -verify-clients=true
+    volumes:
+      - tailscale-socket:/var/run/tailscale
+    depends_on:
+      - tailscale
+    restart: unless-stopped
